@@ -1,34 +1,56 @@
 # skills/red_interceptor.py
 import asyncio
+import logging
 from playwright.async_api import async_playwright
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+BUSQUEDA_URL = "https://procesosjudiciales.funcionjudicial.gob.ec/busqueda"
+
 
 async def extraer_via_red(numero_juicio: str) -> pd.DataFrame:
     resultados = []
 
     async def capturar_respuesta(response):
-        if "api/" in response.url and response.status == 200:
-            content_type = response.headers.get("content-type", "")
-            if "application/json" in content_type:
-                try:
-                    data = await response.json()
-                    resultados.append(data)
-                except Exception:
-                    pass  # Respuesta no relevante, se ignora silenciosamente
+        url = response.url.lower()
+        content_type = response.headers.get("content-type", "")
+
+        if response.status != 200 or "application/json" not in content_type:
+            return
+
+        if "api" not in url and "search" not in url and "procesos" not in url:
+            return
+
+        try:
+            data = await response.json()
+            if isinstance(data, (dict, list)):
+                resultados.append(data)
+        except Exception:
+            logger.debug("Error parsing JSON from intercepted response", exc_info=True)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        
-        # El listener se registra ANTES de la navegación
         page.on("response", capturar_respuesta)
 
-        await page.goto("https://esatje.funcionjudicial.gob.ec/", wait_until="networkidle")
-        await page.fill('input[name="numeroJuicio"]', numero_juicio)
-        await page.click('button[type="submit"]')
+        await page.goto(BUSQUEDA_URL, wait_until="domcontentloaded")
+        await page.wait_for_selector('input[placeholder*="Escriba palabras claves"]', timeout=15000)
 
-        # Freno de ejecución dinámico, sin tiempos fijos
-        await page.wait_for_event("response", timeout=15000)
+        input_locator = page.locator('input[placeholder*="Escriba palabras claves"]').first
+        await input_locator.fill(numero_juicio.strip())
+
+        boton = page.get_by_role("button", name="Buscar")
+        if await boton.count() == 0:
+            boton = page.locator('button[type="submit"]').first
+
+        await boton.click()
+
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            logger.debug("networkidle not reached within timeout", exc_info=False)
+
         await browser.close()
 
     return pd.DataFrame(resultados)

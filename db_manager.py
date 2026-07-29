@@ -1,76 +1,42 @@
 # db_manager.py
-import sqlite3
+"""
+Wrapper de compatibilidad para el gestor de base de datos.
+Delega en la skill `skills.db_queue.queue_manager.DBQueueManager`.
+"""
 import pandas as pd
 from pathlib import Path
+from skills.db_queue.queue_manager import DBQueueManager, DEFAULT_DB_PATH
 
-DB_PATH = Path("esatje_antigravity.db")
+_db_instance = DBQueueManager(DEFAULT_DB_PATH)
+
 
 def inicializar_bd():
-    """
-    Crea las estructuras DDL si no existen, garantizando la tabla de reserva.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Tabla principal de datos extraídos
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS expedientes_judiciales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero_juicio TEXT UNIQUE,
-            datos_completos_json TEXT
-        )
-    ''')
-    
-    # Tabla transaccional obligatoria para el control de la cola (Reserva)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS reserva_transacciones (
-            id_reserva INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero_juicio TEXT UNIQUE,
-            estado TEXT CHECK(estado IN ('PENDIENTE', 'EXITO', 'ERROR')),
-            fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    _db_instance.inicializar_bd()
+
 
 def registrar_extraccion(numero_juicio: str, df_limpio: pd.DataFrame):
-    """
-    Inserta el DataFrame limpio y actualiza la reserva transaccional.
-    Maneja el commit/rollback de forma segura.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    try:
-        # 1. Registrar los datos del expediente
-        datos_json = df_limpio.to_json(orient="records")
-        
-        cursor.execute('''
-            INSERT INTO expedientes_judiciales (numero_juicio, datos_completos_json)
-            VALUES (?, ?)
-            ON CONFLICT(numero_juicio) DO UPDATE SET datos_completos_json=excluded.datos_completos_json
-        ''', (numero_juicio, datos_json))
-        
-        # 2. Confirmar el éxito en la tabla de reserva
-        cursor.execute('''
-            INSERT INTO reserva_transacciones (numero_juicio, estado)
-            VALUES (?, 'EXITO')
-            ON CONFLICT(numero_juicio) DO UPDATE SET estado='EXITO', fecha_actualizacion=CURRENT_TIMESTAMP
-        ''', (numero_juicio,))
-        
-        conn.commit()
-        
-    except Exception as e:
-        conn.rollback()
-        # 3. En caso de fallo estructural, registrar el error en la reserva
-        cursor.execute('''
-            INSERT INTO reserva_transacciones (numero_juicio, estado)
-            VALUES (?, 'ERROR')
-            ON CONFLICT(numero_juicio) DO UPDATE SET estado='ERROR', fecha_actualizacion=CURRENT_TIMESTAMP
-        ''', (numero_juicio,))
-        conn.commit()
-        raise e
-        
-    finally:
-        conn.close()
+    _db_instance.registrar_extraccion(numero_juicio, df_limpio)
+
+
+def registrar_error(numero_juicio: str, error_msg: str):
+    _db_instance.registrar_error(numero_juicio, error_msg)
+
+
+def poblar_causas(causas):
+    _db_instance.poblar_causas(causas)
+
+
+def obtener_estadisticas():
+    return _db_instance.obtener_estadisticas()
+
+
+def reiniciar_errores(max_reintentos: int = 3) -> int:
+    return _db_instance.reiniciar_errores(max_reintentos=max_reintentos)
+
+
+def obtener_siguiente_pendiente():
+    return _db_instance.obtener_siguiente_pendiente()
+
+
+# Exponer la instancia si se necesita acceso directo
+db = _db_instance
